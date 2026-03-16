@@ -21,9 +21,13 @@ import {
   CheckCircle2,
   X,
   PlusCircle,
+  FileDown,
+  Search,
   Warehouse as WarehouseIcon
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import jsPDF from 'jspdf';
+import autoTable from 'jspdf-autotable';
 import { 
   collection, 
   query, 
@@ -44,7 +48,10 @@ import {
   GoogleAuthProvider, 
   onAuthStateChanged, 
   signOut,
-  User
+  User,
+  createUserWithEmailAndPassword,
+  signInWithEmailAndPassword,
+  updateProfile
 } from 'firebase/auth';
 import { db, auth } from './firebase';
 import { format } from 'date-fns';
@@ -285,10 +292,20 @@ export default function AppWrapper() {
 function App() {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
+  const [authMode, setAuthMode] = useState<'login' | 'signup'>('login');
+  const [authForm, setAuthForm] = useState({
+    email: '',
+    password: '',
+    name: ''
+  });
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [authLoading, setAuthLoading] = useState(false);
+  
   const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
   const [selectedWarehouse, setSelectedWarehouse] = useState<Warehouse | null>(null);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [inventory, setInventory] = useState<InventoryItem[]>([]);
+  const [inventorySearch, setInventorySearch] = useState('');
   
   // UI States
   const [activeTab, setActiveTab] = useState<'movimenti' | 'giacenze'>('movimenti');
@@ -301,6 +318,8 @@ function App() {
   const [editingTransaction, setEditingTransaction] = useState<Transaction | null>(null);
   const [isEditInventoryOpen, setIsEditInventoryOpen] = useState(false);
   const [editingInventoryItem, setEditingInventoryItem] = useState<InventoryItem | null>(null);
+  const [isStockWarningOpen, setIsStockWarningOpen] = useState(false);
+  const [stockWarningInfo, setStockWarningInfo] = useState<{ current: number; requested: number } | null>(null);
 
   // Form States
   const [newWarehouseName, setNewWarehouseName] = useState('');
@@ -370,12 +389,50 @@ function App() {
     };
   }, [transactions]);
 
+  const filteredInventory = useMemo(() => {
+    return inventory.filter(item => 
+      item.description.toLowerCase().includes(inventorySearch.toLowerCase())
+    );
+  }, [inventory, inventorySearch]);
+
   // Actions
   const handleLogin = async () => {
     try {
       await signInWithPopup(auth, new GoogleAuthProvider());
     } catch (err) {
       console.error(err);
+    }
+  };
+
+  const handleEmailAuth = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAuthError(null);
+    setAuthLoading(true);
+
+    try {
+      if (authMode === 'signup') {
+        if (!authForm.name.trim()) {
+          throw new Error('Il nome è obbligatorio');
+        }
+        const userCredential = await createUserWithEmailAndPassword(auth, authForm.email, authForm.password);
+        await updateProfile(userCredential.user, {
+          displayName: authForm.name
+        });
+      } else {
+        await signInWithEmailAndPassword(auth, authForm.email, authForm.password);
+      }
+    } catch (err: any) {
+      console.error(err);
+      let message = 'Si è verificato un errore durante l\'autenticazione.';
+      if (err.code === 'auth/email-already-in-use') message = 'Questa email è già in uso.';
+      if (err.code === 'auth/invalid-email') message = 'Email non valida.';
+      if (err.code === 'auth/weak-password') message = 'La password è troppo debole.';
+      if (err.code === 'auth/user-not-found' || err.code === 'auth/wrong-password' || err.code === 'auth/invalid-credential') {
+        message = 'Credenziali non valide.';
+      }
+      setAuthError(err.message || message);
+    } finally {
+      setAuthLoading(false);
     }
   };
 
@@ -404,10 +461,22 @@ function App() {
     }
   };
 
-  const handleAddTransaction = async () => {
+  const handleAddTransaction = async (force = false) => {
     if (!selectedWarehouse) return;
     const { description, quantity, unitCost, date } = transForm;
     const totalCost = quantity * unitCost;
+
+    // Check stock for outgoing transactions
+    if (transactionType === 'out' && !force) {
+      const existingItem = inventory.find(item => item.description.toLowerCase().trim() === description.toLowerCase().trim());
+      const currentStock = existingItem ? existingItem.quantity : 0;
+      
+      if (quantity > currentStock) {
+        setStockWarningInfo({ current: currentStock, requested: quantity });
+        setIsStockWarningOpen(true);
+        return;
+      }
+    }
 
     try {
       // 1. Add Transaction
@@ -504,6 +573,46 @@ function App() {
     }
   };
 
+  const generatePDF = () => {
+    if (!selectedWarehouse) return;
+
+    const doc = new jsPDF();
+    const tableColumn = ["Descrizione", "Quantità", "Costo Unitario (€)", "Valore Totale (€)"];
+    const tableRows: any[] = [];
+
+    inventory.forEach(item => {
+      const itemData = [
+        item.description,
+        item.quantity,
+        item.unitCost.toFixed(2),
+        item.totalValue.toFixed(2),
+      ];
+      tableRows.push(itemData);
+    });
+
+    const totalValue = inventory.reduce((acc, item) => acc + item.totalValue, 0);
+
+    doc.setFontSize(18);
+    doc.text(`Report Inventario: ${selectedWarehouse.name}`, 14, 22);
+    doc.setFontSize(11);
+    doc.text(`Data: ${format(new Date(), 'dd/MM/yyyy HH:mm')}`, 14, 30);
+
+    autoTable(doc, {
+      head: [tableColumn],
+      body: tableRows,
+      startY: 35,
+      theme: 'grid',
+      headStyles: { fillColor: [244, 114, 182] }, // pink-400 equivalent
+    });
+
+    const finalY = (doc as any).lastAutoTable.finalY + 10;
+    doc.setFontSize(12);
+    doc.setFont("helvetica", "bold");
+    doc.text(`Valore Totale Magazzino: € ${totalValue.toLocaleString('it-IT', { minimumFractionDigits: 2 })}`, 14, finalY);
+
+    doc.save(`inventario_${selectedWarehouse.name.toLowerCase().replace(/\s+/g, '_')}_${format(new Date(), 'yyyyMMdd')}.pdf`);
+  };
+
   if (loading) {
     return (
       <div className="min-h-screen bg-linear-to-br from-pink-50 via-rose-50 to-purple-50 flex items-center justify-center">
@@ -522,17 +631,90 @@ function App() {
   if (!user) {
     return (
       <div className="min-h-screen bg-linear-to-br from-pink-100 via-rose-100 to-purple-100 flex items-center justify-center p-4">
-        <Card className="max-w-md w-full text-center space-y-8 p-12">
+        <Card className="max-w-md w-full text-center space-y-8 p-8 sm:p-12">
           <div className="space-y-4">
-            <div className="w-20 h-20 bg-linear-to-br from-pink-400 to-rose-400 rounded-3xl mx-auto flex items-center justify-center shadow-lg transform -rotate-6">
-              <WarehouseIcon size={40} className="text-white" />
+            <div className="w-16 h-16 bg-linear-to-br from-pink-400 to-rose-400 rounded-2xl mx-auto flex items-center justify-center shadow-lg transform -rotate-6">
+              <WarehouseIcon size={32} className="text-white" />
             </div>
-            <h1 className="text-4xl font-bold text-gray-800 tracking-tight">Magazzino</h1>
-            <p className="text-gray-500">Gestisci le tue scorte con eleganza e semplicità.</p>
+            <h1 className="text-3xl font-bold text-gray-800 tracking-tight">Magazzino</h1>
+            <p className="text-gray-500 text-sm">Gestisci le tue scorte con eleganza e semplicità.</p>
           </div>
-          <Button onClick={handleLogin} className="w-full py-4 text-lg">
+
+          <form onSubmit={handleEmailAuth} className="space-y-4 text-left">
+            {authMode === 'signup' && (
+              <div className="space-y-1">
+                <label className="text-xs font-bold text-gray-400 uppercase tracking-wider ml-2">Nome</label>
+                <input 
+                  type="text" 
+                  required
+                  value={authForm.name}
+                  onChange={(e) => setAuthForm({ ...authForm, name: e.target.value })}
+                  placeholder="Il tuo nome"
+                  className="w-full px-4 py-3 rounded-2xl border border-gray-200 focus:ring-2 focus:ring-pink-400 focus:border-transparent outline-none transition-all"
+                />
+              </div>
+            )}
+            <div className="space-y-1">
+              <label className="text-xs font-bold text-gray-400 uppercase tracking-wider ml-2">Email</label>
+              <input 
+                type="email" 
+                required
+                value={authForm.email}
+                onChange={(e) => setAuthForm({ ...authForm, email: e.target.value })}
+                placeholder="email@esempio.com"
+                className="w-full px-4 py-3 rounded-2xl border border-gray-200 focus:ring-2 focus:ring-pink-400 focus:border-transparent outline-none transition-all"
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs font-bold text-gray-400 uppercase tracking-wider ml-2">Password</label>
+              <input 
+                type="password" 
+                required
+                value={authForm.password}
+                onChange={(e) => setAuthForm({ ...authForm, password: e.target.value })}
+                placeholder="••••••••"
+                className="w-full px-4 py-3 rounded-2xl border border-gray-200 focus:ring-2 focus:ring-pink-400 focus:border-transparent outline-none transition-all"
+              />
+            </div>
+
+            {authError && (
+              <div className="p-3 bg-rose-50 text-rose-500 text-xs rounded-xl flex items-center gap-2">
+                <AlertCircle size={14} />
+                <span>{authError}</span>
+              </div>
+            )}
+
+            <Button type="submit" disabled={authLoading} className="w-full py-3">
+              {authLoading ? 'Caricamento...' : authMode === 'login' ? 'Accedi' : 'Registrati'}
+            </Button>
+          </form>
+
+          <div className="relative">
+            <div className="absolute inset-0 flex items-center">
+              <div className="w-full border-t border-gray-200"></div>
+            </div>
+            <div className="relative flex justify-center text-xs uppercase">
+              <span className="bg-white px-2 text-gray-400">Oppure</span>
+            </div>
+          </div>
+
+          <Button onClick={handleLogin} variant="ghost" className="w-full py-3 border border-gray-100 shadow-sm">
+            <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" alt="Google" className="w-5 h-5 mr-2" />
             Accedi con Google
           </Button>
+
+          <p className="text-sm text-gray-500">
+            {authMode === 'login' ? 'Non hai un account?' : 'Hai già un account?'}
+            <button 
+              onClick={() => {
+                setAuthMode(authMode === 'login' ? 'signup' : 'login');
+                setAuthError(null);
+              }}
+              className="ml-1 text-pink-500 font-bold hover:underline"
+            >
+              {authMode === 'login' ? 'Registrati' : 'Accedi'}
+            </button>
+          </p>
         </Card>
       </div>
     );
@@ -850,13 +1032,34 @@ function App() {
                   exit={{ opacity: 0, x: -20 }}
                   className="space-y-6"
                 >
-                  <div className="flex items-center gap-2 text-gray-800">
-                    <Package size={20} className="text-pink-400" />
-                    <h3 className="text-xl font-bold">Giacenze Magazzino</h3>
+                  <div className="flex items-center justify-between gap-2 text-gray-800">
+                    <div className="flex items-center gap-2">
+                      <Package size={20} className="text-pink-400" />
+                      <h3 className="text-xl font-bold">Giacenze Magazzino</h3>
+                    </div>
+                    <Button 
+                      onClick={generatePDF} 
+                      variant="secondary" 
+                      className="text-xs py-2 px-4"
+                      disabled={inventory.length === 0}
+                    >
+                      <FileDown size={16} /> Scarica Report PDF
+                    </Button>
+                  </div>
+                  
+                  <div className="relative">
+                    <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
+                    <input 
+                      type="text"
+                      placeholder="Cerca prodotto per descrizione..."
+                      value={inventorySearch}
+                      onChange={(e) => setInventorySearch(e.target.value)}
+                      className="w-full pl-12 pr-4 py-3 bg-white/60 backdrop-blur-sm border border-white/20 rounded-2xl focus:ring-2 focus:ring-pink-400 focus:border-transparent outline-none transition-all shadow-sm"
+                    />
                   </div>
                   
                   <div className="space-y-3">
-                    {inventory.map((item) => (
+                    {filteredInventory.map((item) => (
                       <motion.div 
                         key={item.id}
                         initial={{ opacity: 0, y: 10 }}
@@ -1021,7 +1224,7 @@ function App() {
               <span className="text-gray-500 font-medium">Totale:</span>
               <span className="text-2xl font-bold text-gray-800">€ {(transForm.quantity * transForm.unitCost).toFixed(2)}</span>
             </div>
-            <Button onClick={handleAddTransaction} className="w-full">Conferma Operazione</Button>
+            <Button onClick={() => handleAddTransaction(false)} className="w-full">Conferma Operazione</Button>
           </div>
         </div>
       </Modal>
@@ -1085,6 +1288,17 @@ function App() {
           itemToDelete?.type === 'warehouse' ? 'il magazzino e tutti i suoi dati' : 
           itemToDelete?.type === 'transaction' ? 'questo movimento' : 'questo prodotto dal magazzino'
         }.`}
+      />
+
+      <ConfirmModal 
+        isOpen={isStockWarningOpen}
+        onClose={() => setIsStockWarningOpen(false)}
+        onConfirm={() => {
+          setIsStockWarningOpen(false);
+          handleAddTransaction(true);
+        }}
+        title="Attenzione: Scorta Insufficiente"
+        message={`Stai registrando un'uscita di ${stockWarningInfo?.requested} unità, ma la giacenza attuale è di sole ${stockWarningInfo?.current} unità. Il saldo diventerà negativo. Vuoi procedere comunque?`}
       />
     </div>
   );
