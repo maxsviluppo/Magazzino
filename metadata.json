@@ -1,0 +1,5 @@
+{
+  "name": "Magazzino",
+  "description": "Un'applicazione elegante e semplice per la gestione del magazzino, con monitoraggio di entrate, uscite e giacenze.",
+  "requestFramePermissions": []
+}

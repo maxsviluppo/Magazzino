@@ -1,0 +1,59 @@
+{
+  "entities": {
+    "Warehouse": {
+      "title": "Warehouse",
+      "description": "A warehouse container for products and transactions.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "description": "Name of the warehouse" },
+        "ownerUid": { "type": "string", "description": "UID of the owner" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Creation timestamp" }
+      },
+      "required": ["name", "ownerUid", "createdAt"]
+    },
+    "Transaction": {
+      "title": "Transaction",
+      "description": "A record of stock moving in or out of the warehouse.",
+      "type": "object",
+      "properties": {
+        "warehouseId": { "type": "string", "description": "ID of the warehouse" },
+        "type": { "type": "string", "enum": ["in", "out"], "description": "Type of transaction" },
+        "date": { "type": "string", "format": "date-time", "description": "Date of transaction" },
+        "description": { "type": "string", "description": "Description of the item" },
+        "quantity": { "type": "number", "description": "Quantity moved" },
+        "unitCost": { "type": "number", "description": "Cost per unit" },
+        "totalCost": { "type": "number", "description": "Total cost of the transaction" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Creation timestamp" }
+      },
+      "required": ["warehouseId", "type", "date", "description", "quantity", "unitCost", "totalCost", "createdAt"]
+    },
+    "InventoryItem": {
+      "title": "Inventory Item",
+      "description": "Current stock levels for a product in a warehouse.",
+      "type": "object",
+      "properties": {
+        "warehouseId": { "type": "string", "description": "ID of the warehouse" },
+        "description": { "type": "string", "description": "Description of the item" },
+        "quantity": { "type": "number", "description": "Current quantity in stock" },
+        "unitCost": { "type": "number", "description": "Last or average unit cost" },
+        "totalValue": { "type": "number", "description": "Total value of stock" },
+        "lastUpdated": { "type": "string", "format": "date-time", "description": "Last update timestamp" }
+      },
+      "required": ["warehouseId", "description", "quantity", "unitCost", "totalValue", "lastUpdated"]
+    }
+  },
+  "firestore": {
+    "/warehouses/{warehouseId}": {
+      "schema": "Warehouse",
+      "description": "User warehouses"
+    },
+    "/warehouses/{warehouseId}/transactions/{transactionId}": {
+      "schema": "Transaction",
+      "description": "Transactions for a specific warehouse"
+    },
+    "/warehouses/{warehouseId}/inventory/{inventoryItemId}": {
+      "schema": "InventoryItem",
+      "description": "Inventory levels for a specific warehouse"
+    }
+  }
+}
